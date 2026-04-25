@@ -67,6 +67,4 @@ src/
   savestate.zig  Save state serialization
 ```
 
-## License
 
-See repository for license details.
