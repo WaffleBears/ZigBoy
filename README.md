@@ -2,6 +2,11 @@
 
 A Game Boy, Game Boy Color, and Game Boy Advance emulator for Windows, written in Zig.
 
+<img width="962" height="748" alt="image" src="https://github.com/user-attachments/assets/c768435b-813d-493a-b369-59204d1d2218" />
+
+<img width="960" height="750" alt="image" src="https://github.com/user-attachments/assets/7efa24e3-25ca-45f6-89a6-961ee8e1fa8f" />
+
+
 ### Features
 
 - Game Boy (GB), Game Boy Color (GBC), and Game Boy Advance (GBA) support
