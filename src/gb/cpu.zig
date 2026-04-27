@@ -348,10 +348,11 @@ pub const Cpu = struct {
         if (pending != 0) self.halted = false;
         if (!self.ime or pending == 0) return 0;
         var bit_n: u3 = 0;
-        while (bit_n < 4) : (bit_n += 1) {
+        while (bit_n < 5) : (bit_n += 1) {
             const mask: u8 = @as(u8, 1) << bit_n;
             if ((pending & mask) != 0) break;
         }
+        if (bit_n >= 5) return 0;
         self.ime = false;
         self.mmu.if_reg &= ~(@as(u8, 1) << bit_n);
         self.push16(self.pc);
@@ -367,13 +368,17 @@ pub const Cpu = struct {
     }
 
     pub fn step(self: *Cpu) u32 {
+        if (self.stopped) {
+            if (self.mmu.joypad.buttons != 0xFF) {
+                self.stopped = false;
+            } else {
+                return 4;
+            }
+        }
         const apply_ime = self.ime_pending;
         const irq_cycles = self.handleInterrupts();
         if (irq_cycles != 0) {
-            if (apply_ime) {
-                self.ime_pending = false;
-                self.ime = true;
-            }
+            self.ime_pending = false;
             return irq_cycles;
         }
         if (self.halted) {
@@ -460,13 +465,15 @@ pub const Cpu = struct {
             },
             0x10 => blk: {
                 _ = self.fetch8();
+                self.mmu.timer.div_counter = 0;
                 if (self.mmu.cgb_mode and (self.mmu.key1 & 0x01) != 0) {
                     self.double_speed = !self.double_speed;
                     self.mmu.key1 = if (self.double_speed) 0x80 else 0x00;
+                    break :blk 8200;
                 } else {
                     self.stopped = true;
+                    break :blk 4;
                 }
-                break :blk 4;
             },
             0x11 => blk: {
                 self.setDe(self.fetch16());

@@ -44,8 +44,6 @@ pub const Gb = struct {
             .ppu = Ppu.init(cgb),
             .apu = apu,
         };
-        gb.timer = .{};
-        gb.joypad = .{};
         gb.mmu = Mmu.init(gb.cart, &gb.ppu, &gb.apu, &gb.timer, &gb.joypad, cgb);
         gb.cpu = Cpu.init(&gb.mmu);
         gb.cpu.resetPostBoot(cgb);
@@ -60,6 +58,7 @@ pub const Gb = struct {
     }
 
     pub fn reset(self: *Gb) void {
+        self.cart.reset();
         self.mmu.reset(self.cgb_mode);
         self.ppu.reset(self.cgb_mode);
         self.timer.reset();
@@ -73,14 +72,31 @@ pub const Gb = struct {
         var cycles: u32 = 0;
         self.ppu.new_frame = false;
         while (cycles < target and !self.ppu.new_frame) {
+            if (self.mmu.gdma_pending_cycles > 0) {
+                const c: u32 = @min(self.mmu.gdma_pending_cycles, 4);
+                self.mmu.gdma_pending_cycles -= c;
+                self.timer.step(c);
+                self.mmu.stepOamDma(c);
+                self.mmu.stepSerial(c);
+                const eff = if (self.cpu.double_speed) c / 2 else c;
+                self.ppu.step(eff);
+                self.apu.step(c, self.cpu.double_speed);
+                self.mmu.hdmaStep();
+                self.mmu.collectIrqs();
+                self.cart.tickRtc(eff);
+                cycles += c;
+                continue;
+            }
             const c = self.cpu.step();
             self.timer.step(c);
             self.mmu.stepOamDma(c);
+            self.mmu.stepSerial(c);
             const eff = if (self.cpu.double_speed) c / 2 else c;
             self.ppu.step(eff);
             self.apu.step(c, self.cpu.double_speed);
             self.mmu.hdmaStep();
             self.mmu.collectIrqs();
+            self.cart.tickRtc(eff);
             cycles += c;
         }
     }
@@ -128,5 +144,9 @@ pub const Gb = struct {
         if (!self.cart.has_battery) return;
         if (data.len != self.cart.ram.len) return;
         @memcpy(self.cart.ram, data);
+    }
+
+    pub fn setDmgPalette(self: *Gb, palette: [4]u32) void {
+        self.ppu.dmg_palette = palette;
     }
 };

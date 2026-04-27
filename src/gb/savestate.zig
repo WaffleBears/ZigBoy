@@ -1,7 +1,17 @@
 const std = @import("std");
 
 const MAGIC: u32 = 0x47424353;
-const VERSION: u32 = 2;
+const VERSION: u32 = 4;
+
+const TAG_META = "META".*;
+const TAG_CPU = "CPU0".*;
+const TAG_MMU = "MMU0".*;
+const TAG_PPU = "PPU0".*;
+const TAG_TIM = "TIM0".*;
+const TAG_APU = "APU0".*;
+const TAG_JOY = "JOY0".*;
+const TAG_CART = "CRT0".*;
+const TAG_END = "END0".*;
 
 pub const Writer = struct {
     list: *std.ArrayList(u8),
@@ -29,9 +39,10 @@ pub const Writer = struct {
 pub const Reader = struct {
     buf: []const u8,
     pos: usize = 0,
+    end: usize = 0,
 
     pub fn u8v(self: *Reader) !u8 {
-        if (self.pos >= self.buf.len) return error.Truncated;
+        if (self.pos >= self.end) return error.Truncated;
         const v = self.buf[self.pos];
         self.pos += 1;
         return v;
@@ -47,7 +58,7 @@ pub const Reader = struct {
         return (@as(u32, hi) << 16) | lo;
     }
     pub fn bytes(self: *Reader, dst: []u8) !void {
-        if (self.pos + dst.len > self.buf.len) return error.Truncated;
+        if (self.pos + dst.len > self.end) return error.Truncated;
         @memcpy(dst, self.buf[self.pos .. self.pos + dst.len]);
         self.pos += dst.len;
     }
@@ -55,10 +66,32 @@ pub const Reader = struct {
         return (try self.u8v()) != 0;
     }
     pub fn skip(self: *Reader, n: usize) !void {
-        if (self.pos + n > self.buf.len) return error.Truncated;
+        if (self.pos + n > self.end) return error.Truncated;
         self.pos += n;
     }
+    pub fn opt_u8(self: *Reader) ?u8 {
+        if (self.pos >= self.end) return null;
+        return self.u8v() catch null;
+    }
+    pub fn opt_u16(self: *Reader) ?u16 {
+        if (self.pos + 2 > self.end) return null;
+        return self.u16v() catch null;
+    }
+    pub fn opt_u32(self: *Reader) ?u32 {
+        if (self.pos + 4 > self.end) return null;
+        return self.u32v() catch null;
+    }
+    pub fn opt_bool(self: *Reader) ?bool {
+        if (self.pos >= self.end) return null;
+        return self.boolv() catch null;
+    }
 };
+
+fn writeChunk(w: *Writer, tag: [4]u8, payload: []const u8) !void {
+    try w.bytes(&tag);
+    try w.u32v(@intCast(payload.len));
+    try w.bytes(payload);
+}
 
 pub fn save(alloc: std.mem.Allocator, gb: anytype) ![]u8 {
     var list: std.ArrayList(u8) = .empty;
@@ -67,91 +100,131 @@ pub fn save(alloc: std.mem.Allocator, gb: anytype) ![]u8 {
 
     try w.u32v(MAGIC);
     try w.u32v(VERSION);
-    try w.u32v(std.hash.Crc32.hash(gb.cart.rom));
-    try w.boolv(gb.cgb_mode);
+
+    var section: std.ArrayList(u8) = .empty;
+    defer section.deinit(alloc);
+    var sw: Writer = .{ .list = &section, .alloc = alloc };
+
+    section.clearRetainingCapacity();
+    try sw.u32v(std.hash.Crc32.hash(gb.cart.rom));
+    try sw.boolv(gb.cgb_mode);
+    try writeChunk(&w, TAG_META, section.items);
 
     const cpu = &gb.cpu;
-    try w.u8v(cpu.a);
-    try w.u8v(cpu.f);
-    try w.u8v(cpu.b);
-    try w.u8v(cpu.c);
-    try w.u8v(cpu.d);
-    try w.u8v(cpu.e);
-    try w.u8v(cpu.h);
-    try w.u8v(cpu.l);
-    try w.u16v(cpu.sp);
-    try w.u16v(cpu.pc);
-    try w.boolv(cpu.ime);
-    try w.boolv(cpu.ime_pending);
-    try w.boolv(cpu.halted);
-    try w.boolv(cpu.double_speed);
+    section.clearRetainingCapacity();
+    try sw.u8v(cpu.a);
+    try sw.u8v(cpu.f);
+    try sw.u8v(cpu.b);
+    try sw.u8v(cpu.c);
+    try sw.u8v(cpu.d);
+    try sw.u8v(cpu.e);
+    try sw.u8v(cpu.h);
+    try sw.u8v(cpu.l);
+    try sw.u16v(cpu.sp);
+    try sw.u16v(cpu.pc);
+    try sw.boolv(cpu.ime);
+    try sw.boolv(cpu.ime_pending);
+    try sw.boolv(cpu.halted);
+    try sw.boolv(cpu.halt_bug);
+    try sw.boolv(cpu.stopped);
+    try sw.boolv(cpu.double_speed);
+    try writeChunk(&w, TAG_CPU, section.items);
 
     const mmu = &gb.mmu;
-    try w.bytes(&mmu.wram);
-    try w.bytes(&mmu.hram);
-    try w.u8v(mmu.ie);
-    try w.u8v(mmu.if_reg);
-    try w.u8v(mmu.svbk);
-    try w.u8v(mmu.key1);
-    try w.boolv(mmu.oam_dma_active);
-    try w.u16v(mmu.oam_dma_src);
-    try w.u8v(mmu.oam_dma_pos);
-    try w.u32v(mmu.oam_dma_cycles);
+    section.clearRetainingCapacity();
+    try sw.bytes(&mmu.wram);
+    try sw.bytes(&mmu.hram);
+    try sw.u8v(mmu.ie);
+    try sw.u8v(mmu.if_reg);
+    try sw.u8v(mmu.svbk);
+    try sw.u8v(mmu.key1);
+    try sw.boolv(mmu.oam_dma_active);
+    try sw.u16v(mmu.oam_dma_src);
+    try sw.u8v(mmu.oam_dma_pos);
+    try sw.u32v(mmu.oam_dma_cycles);
+    try sw.u8v(mmu.boot_off);
+    try sw.u8v(mmu.serial_data);
+    try sw.u8v(mmu.serial_ctrl);
+    try sw.u32v(mmu.serial_cycles);
+    try sw.u8v(mmu.rp);
+    try sw.u32v(mmu.gdma_pending_cycles);
+    try sw.u16v(@bitCast(mmu.last_hdma_ly));
+    try writeChunk(&w, TAG_MMU, section.items);
+
+    section.clearRetainingCapacity();
+    try sw.u8v(gb.joypad.buttons);
+    try sw.boolv(gb.joypad.select_dir);
+    try sw.boolv(gb.joypad.select_btn);
+    try sw.boolv(gb.joypad.irq_request);
+    try writeChunk(&w, TAG_JOY, section.items);
 
     const ppu = &gb.ppu;
-    try w.bytes(&ppu.vram);
-    try w.bytes(&ppu.oam);
-    try w.u8v(ppu.lcdc);
-    try w.u8v(ppu.stat);
-    try w.u8v(ppu.scy);
-    try w.u8v(ppu.scx);
-    try w.u8v(ppu.ly);
-    try w.u8v(ppu.lyc);
-    try w.u8v(ppu.bgp);
-    try w.u8v(ppu.obp0);
-    try w.u8v(ppu.obp1);
-    try w.u8v(ppu.wy);
-    try w.u8v(ppu.wx);
-    try w.u8v(ppu.vbk);
-    try w.u8v(ppu.bcps);
-    try w.u8v(ppu.ocps);
-    try w.bytes(&ppu.bcpd);
-    try w.bytes(&ppu.ocpd);
-    try w.u8v(ppu.opri);
-    try w.u16v(ppu.hdma_src);
-    try w.u16v(ppu.hdma_dst);
-    try w.u8v(ppu.hdma_len);
-    try w.boolv(ppu.hdma_active);
-    try w.u8v(ppu.hdma_blocks_left);
-    try w.u32v(ppu.cycles);
-    try w.u8v(@intFromEnum(ppu.mode));
-    try w.u8v(ppu.window_line);
+    section.clearRetainingCapacity();
+    try sw.bytes(&ppu.vram);
+    try sw.bytes(&ppu.oam);
+    try sw.u8v(ppu.lcdc);
+    try sw.u8v(ppu.stat);
+    try sw.u8v(ppu.scy);
+    try sw.u8v(ppu.scx);
+    try sw.u8v(ppu.ly);
+    try sw.u8v(ppu.lyc);
+    try sw.u8v(ppu.bgp);
+    try sw.u8v(ppu.obp0);
+    try sw.u8v(ppu.obp1);
+    try sw.u8v(ppu.wy);
+    try sw.u8v(ppu.wx);
+    try sw.u8v(ppu.vbk);
+    try sw.u8v(ppu.bcps);
+    try sw.u8v(ppu.ocps);
+    try sw.bytes(&ppu.bcpd);
+    try sw.bytes(&ppu.ocpd);
+    try sw.u8v(ppu.opri);
+    try sw.u16v(ppu.hdma_src);
+    try sw.u16v(ppu.hdma_dst);
+    try sw.u8v(ppu.hdma_len);
+    try sw.boolv(ppu.hdma_active);
+    try sw.u8v(ppu.hdma_blocks_left);
+    try sw.u32v(ppu.cycles);
+    try sw.u8v(@intFromEnum(ppu.mode));
+    try sw.u8v(ppu.window_line);
+    try sw.u32v(ppu.mode3_duration);
+    try sw.boolv(ppu.irq_vblank);
+    try sw.boolv(ppu.irq_stat);
+    try sw.boolv(ppu.stat_line);
+    try writeChunk(&w, TAG_PPU, section.items);
 
     const tm = &gb.timer;
-    try w.u16v(tm.div_counter);
-    try w.u8v(tm.tima);
-    try w.u8v(tm.tma);
-    try w.u8v(tm.tac);
-    try w.boolv(tm.overflow_pending);
-    try w.u8v(tm.overflow_delay);
-    try w.u8v(@intCast(tm.last_and));
+    section.clearRetainingCapacity();
+    try sw.u16v(tm.div_counter);
+    try sw.u8v(tm.tima);
+    try sw.u8v(tm.tma);
+    try sw.u8v(tm.tac);
+    try sw.boolv(tm.overflow_pending);
+    try sw.u8v(tm.overflow_delay);
+    try sw.u8v(@intCast(tm.last_and));
+    try sw.boolv(tm.irq_request);
+    try writeChunk(&w, TAG_TIM, section.items);
 
-    try writeApu(&w, &gb.apu);
-
-    try w.boolv(ppu.stat_line);
-    try w.u16v(@bitCast(gb.mmu.last_hdma_ly));
+    section.clearRetainingCapacity();
+    try writeApu(&sw, &gb.apu);
+    try writeChunk(&w, TAG_APU, section.items);
 
     const cart = gb.cart;
-    try w.u16v(cart.rom_bank);
-    try w.u8v(cart.ram_bank);
-    try w.boolv(cart.ram_enabled);
-    try w.u8v(cart.banking_mode);
-    try w.bytes(&cart.rtc_regs);
-    try w.bytes(&cart.rtc_latched);
-    try w.u8v(cart.rtc_select);
-    try w.u8v(cart.rtc_latch_prev);
-    try w.u32v(@intCast(cart.ram.len));
-    try w.bytes(cart.ram);
+    section.clearRetainingCapacity();
+    try sw.u16v(cart.rom_bank);
+    try sw.u8v(cart.ram_bank);
+    try sw.boolv(cart.ram_enabled);
+    try sw.u8v(cart.banking_mode);
+    try sw.bytes(&cart.rtc_regs);
+    try sw.bytes(&cart.rtc_latched);
+    try sw.u8v(cart.rtc_select);
+    try sw.u8v(cart.rtc_latch_prev);
+    try sw.u32v(cart.rtc_cycle_accum);
+    try sw.u32v(@intCast(cart.ram.len));
+    try sw.bytes(cart.ram);
+    try writeChunk(&w, TAG_CART, section.items);
+
+    try writeChunk(&w, TAG_END, &.{});
 
     return try list.toOwnedSlice(alloc);
 }
@@ -268,18 +341,18 @@ fn readApu(r: *Reader, apu: anytype) !void {
     apu.noise.env_period = try r.u8v();
     apu.noise.env_timer = try r.u8v();
     apu.noise.env_dir = try r.boolv();
+    apu.buffer_head = 0;
     apu.buffer_len = 0;
     apu.sample_timer = 0;
 }
 
-pub fn load(data: []const u8, gb: anytype) !void {
-    var r: Reader = .{ .buf = data };
+fn loadMeta(r: *Reader, gb: anytype) !void {
+    const hash = try r.u32v();
+    if (hash != std.hash.Crc32.hash(gb.cart.rom)) return error.WrongRom;
+    _ = r.opt_bool();
+}
 
-    if ((try r.u32v()) != MAGIC) return error.BadMagic;
-    if ((try r.u32v()) != VERSION) return error.WrongVersion;
-    if ((try r.u32v()) != std.hash.Crc32.hash(gb.cart.rom)) return error.WrongRom;
-    _ = try r.boolv();
-
+fn loadCpu(r: *Reader, gb: anytype) !void {
     const cpu = &gb.cpu;
     cpu.a = try r.u8v();
     cpu.f = try r.u8v();
@@ -294,8 +367,12 @@ pub fn load(data: []const u8, gb: anytype) !void {
     cpu.ime = try r.boolv();
     cpu.ime_pending = try r.boolv();
     cpu.halted = try r.boolv();
+    cpu.halt_bug = try r.boolv();
+    cpu.stopped = try r.boolv();
     cpu.double_speed = try r.boolv();
+}
 
+fn loadMmu(r: *Reader, gb: anytype) !void {
     const mmu = &gb.mmu;
     try r.bytes(&mmu.wram);
     try r.bytes(&mmu.hram);
@@ -307,7 +384,23 @@ pub fn load(data: []const u8, gb: anytype) !void {
     mmu.oam_dma_src = try r.u16v();
     mmu.oam_dma_pos = try r.u8v();
     mmu.oam_dma_cycles = try r.u32v();
+    mmu.boot_off = try r.u8v();
+    mmu.serial_data = try r.u8v();
+    mmu.serial_ctrl = try r.u8v();
+    mmu.serial_cycles = try r.u32v();
+    mmu.rp = try r.u8v();
+    mmu.gdma_pending_cycles = try r.u32v();
+    if (r.opt_u16()) |v| mmu.last_hdma_ly = @bitCast(v);
+}
 
+fn loadJoy(r: *Reader, gb: anytype) !void {
+    gb.joypad.buttons = try r.u8v();
+    gb.joypad.select_dir = try r.boolv();
+    gb.joypad.select_btn = try r.boolv();
+    gb.joypad.irq_request = try r.boolv();
+}
+
+fn loadPpu(r: *Reader, gb: anytype) !void {
     const ppu = &gb.ppu;
     try r.bytes(&ppu.vram);
     try r.bytes(&ppu.oam);
@@ -337,7 +430,16 @@ pub fn load(data: []const u8, gb: anytype) !void {
     const mode_v = try r.u8v();
     ppu.mode = @enumFromInt(mode_v & 0x03);
     ppu.window_line = try r.u8v();
+    ppu.mode3_duration = try r.u32v();
+    ppu.irq_vblank = try r.boolv();
+    ppu.irq_stat = try r.boolv();
+    if (r.opt_bool()) |v| ppu.stat_line = v;
+    ppu.draw_x = 0;
+    ppu.frame_sprite_count = 0;
+    ppu.window_line_used_on_line = false;
+}
 
+fn loadTim(r: *Reader, gb: anytype) !void {
     const tm = &gb.timer;
     tm.div_counter = try r.u16v();
     tm.tima = try r.u8v();
@@ -346,12 +448,10 @@ pub fn load(data: []const u8, gb: anytype) !void {
     tm.overflow_pending = try r.boolv();
     tm.overflow_delay = try r.u8v();
     tm.last_and = @intCast((try r.u8v()) & 1);
+    if (r.opt_bool()) |v| tm.irq_request = v;
+}
 
-    try readApu(&r, &gb.apu);
-
-    ppu.stat_line = try r.boolv();
-    gb.mmu.last_hdma_ly = @bitCast(try r.u16v());
-
+fn loadCart(r: *Reader, gb: anytype) !void {
     const cart = gb.cart;
     cart.rom_bank = try r.u16v();
     cart.ram_bank = try r.u8v();
@@ -361,10 +461,52 @@ pub fn load(data: []const u8, gb: anytype) !void {
     try r.bytes(&cart.rtc_latched);
     cart.rtc_select = try r.u8v();
     cart.rtc_latch_prev = try r.u8v();
+    cart.rtc_cycle_accum = try r.u32v();
     const ram_len = try r.u32v();
     if (ram_len == cart.ram.len) {
         try r.bytes(cart.ram);
     } else {
         try r.skip(ram_len);
+    }
+}
+
+pub fn load(data: []const u8, gb: anytype) !void {
+    if (data.len < 8) return error.Truncated;
+    var head: Reader = .{ .buf = data, .end = data.len };
+
+    if ((try head.u32v()) != MAGIC) return error.BadMagic;
+    const version = try head.u32v();
+    if (version != VERSION) return error.WrongVersion;
+
+    while (head.pos < head.end) {
+        if (head.pos + 8 > head.end) return error.Truncated;
+        var tag: [4]u8 = undefined;
+        try head.bytes(&tag);
+        const len = try head.u32v();
+        if (head.pos + len > head.end) return error.Truncated;
+        const chunk_end = head.pos + len;
+        var r: Reader = .{ .buf = data, .pos = head.pos, .end = chunk_end };
+
+        if (std.mem.eql(u8, &tag, &TAG_END)) {
+            head.pos = chunk_end;
+            break;
+        } else if (std.mem.eql(u8, &tag, &TAG_META)) {
+            try loadMeta(&r, gb);
+        } else if (std.mem.eql(u8, &tag, &TAG_CPU)) {
+            try loadCpu(&r, gb);
+        } else if (std.mem.eql(u8, &tag, &TAG_MMU)) {
+            try loadMmu(&r, gb);
+        } else if (std.mem.eql(u8, &tag, &TAG_JOY)) {
+            try loadJoy(&r, gb);
+        } else if (std.mem.eql(u8, &tag, &TAG_PPU)) {
+            try loadPpu(&r, gb);
+        } else if (std.mem.eql(u8, &tag, &TAG_TIM)) {
+            try loadTim(&r, gb);
+        } else if (std.mem.eql(u8, &tag, &TAG_APU)) {
+            try readApu(&r, &gb.apu);
+        } else if (std.mem.eql(u8, &tag, &TAG_CART)) {
+            try loadCart(&r, gb);
+        }
+        head.pos = chunk_end;
     }
 }

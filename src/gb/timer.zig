@@ -29,10 +29,9 @@ pub const Timer = struct {
                 self.checkEdge();
             },
             0xFF05 => {
-                if (self.overflow_delay == 0) {
-                    self.tima = val;
-                    self.overflow_pending = false;
-                }
+                self.tima = val;
+                self.overflow_pending = false;
+                self.overflow_delay = 0;
             },
             0xFF06 => {
                 self.tma = val;

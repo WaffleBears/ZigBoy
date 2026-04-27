@@ -29,8 +29,10 @@ pub const Mmu = struct {
     rp: u8 = 0x3E,
     serial_data: u8 = 0,
     serial_ctrl: u8 = 0x7E,
+    serial_cycles: u32 = 0,
 
     last_hdma_ly: i16 = -1,
+    gdma_pending_cycles: u32 = 0,
 
     pub fn init(cart: *Cart, ppu: *Ppu, apu: *Apu, timer: *Timer, joypad: *Joypad, cgb: bool) Mmu {
         return .{
@@ -53,12 +55,15 @@ pub const Mmu = struct {
         self.boot_off = 1;
         self.cgb_mode = cgb;
         self.oam_dma_active = false;
+        self.oam_dma_src = 0;
         self.oam_dma_pos = 0;
         self.oam_dma_cycles = 0;
         self.rp = 0x3E;
         self.serial_data = 0;
         self.serial_ctrl = 0x7E;
+        self.serial_cycles = 0;
         self.last_hdma_ly = -1;
+        self.gdma_pending_cycles = 0;
     }
 
     fn wramBank(self: *Mmu) usize {
@@ -68,6 +73,7 @@ pub const Mmu = struct {
     }
 
     pub fn read(self: *Mmu, addr: u16) u8 {
+        if (self.oam_dma_active and addr < 0xFF00) return 0xFF;
         if (addr < 0x8000) return self.cart.read(addr);
         if (addr < 0xA000) return self.ppu.readVram(addr);
         if (addr < 0xC000) return self.cart.read(addr);
@@ -149,7 +155,10 @@ pub const Mmu = struct {
         switch (addr) {
             0xFF00 => self.joypad.write(val),
             0xFF01 => self.serial_data = val,
-            0xFF02 => self.serial_ctrl = val,
+            0xFF02 => {
+                self.serial_ctrl = val;
+                if ((val & 0x81) == 0x81) self.serial_cycles = 4096;
+            },
             0xFF04...0xFF07 => self.timer.write(addr, val),
             0xFF0F => self.if_reg = val | 0xE0,
             0xFF10...0xFF3F => self.apu.write(addr, val),
@@ -169,7 +178,8 @@ pub const Mmu = struct {
                 const was_active = self.ppu.hdma_active;
                 if ((val & 0x80) == 0 and was_active) {
                     self.ppu.hdma_active = false;
-                    self.ppu.hdma_len = (self.ppu.hdma_len & 0x7F) | 0x80;
+                    const remaining: u8 = if (self.ppu.hdma_blocks_left > 0) self.ppu.hdma_blocks_left - 1 else 0;
+                    self.ppu.hdma_len = remaining | 0x80;
                     return;
                 }
                 self.ppu.writeReg(addr, val);
@@ -197,22 +207,48 @@ pub const Mmu = struct {
         self.oam_dma_cycles = 0;
     }
 
+    pub fn stepSerial(self: *Mmu, cycles: u32) void {
+        if (self.serial_cycles == 0) return;
+        if (cycles >= self.serial_cycles) {
+            self.serial_cycles = 0;
+            self.serial_data = 0xFF;
+            self.serial_ctrl &= 0x7F;
+            self.requestInterrupt(3);
+        } else {
+            self.serial_cycles -= cycles;
+        }
+    }
+
     pub fn stepOamDma(self: *Mmu, cycles: u32) void {
         if (!self.oam_dma_active) return;
         self.oam_dma_cycles += cycles;
         while (self.oam_dma_cycles >= 4 and self.oam_dma_pos < 0xA0) {
             self.oam_dma_cycles -= 4;
-            const src = self.oam_dma_src + self.oam_dma_pos;
-            const v = self.readDmaSrc(src);
+            const src: u16 = self.oam_dma_src +% @as(u16, self.oam_dma_pos);
+            const v = self.readOamDmaSrc(src);
             self.ppu.oam[self.oam_dma_pos] = v;
-            self.oam_dma_pos += 1;
+            self.oam_dma_pos +%= 1;
         }
         if (self.oam_dma_pos >= 0xA0) self.oam_dma_active = false;
     }
 
-    fn readDmaSrc(self: *Mmu, addr: u16) u8 {
+    fn readOamDmaSrc(self: *Mmu, addr: u16) u8 {
         if (addr < 0x8000) return self.cart.read(addr);
         if (addr < 0xA000) return self.ppu.readVram(addr);
+        if (addr < 0xC000) return self.cart.read(addr);
+        if (addr < 0xD000) return self.wram[addr - 0xC000];
+        if (addr < 0xE000) return self.wram[self.wramBank() * 0x1000 + (addr - 0xD000)];
+        if (addr < 0xFE00) {
+            const mirrored: u16 = addr -% 0x2000;
+            if (mirrored < 0xD000) return self.wram[mirrored - 0xC000];
+            return self.wram[self.wramBank() * 0x1000 + (mirrored - 0xD000)];
+        }
+        return 0xFF;
+    }
+
+    fn readDmaSrc(self: *Mmu, addr: u16) u8 {
+        if (addr < 0x8000) return self.cart.read(addr);
+        if (addr < 0xA000) return 0xFF;
         if (addr < 0xC000) return self.cart.read(addr);
         if (addr < 0xD000) return self.wram[addr - 0xC000];
         if (addr < 0xE000) return self.wram[self.wramBank() * 0x1000 + (addr - 0xD000)];
@@ -231,6 +267,8 @@ pub const Mmu = struct {
         self.ppu.hdma_active = false;
         self.ppu.hdma_blocks_left = 0;
         self.ppu.hdma_len = 0xFF;
+        const per_block: u32 = if ((self.key1 & 0x80) != 0) 64 else 32;
+        self.gdma_pending_cycles = blocks * per_block;
     }
 
     pub fn requestInterrupt(self: *Mmu, bit: u3) void {

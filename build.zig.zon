@@ -1,12 +1,12 @@
 .{
-    .name = .gbc,
-    .version = "0.1.0",
-    .fingerprint = 0x31a93d70919f7f20,
-    .minimum_zig_version = "0.16.0",
-    .dependencies = .{},
-    .paths = .{
-        "build.zig",
-        "build.zig.zon",
-        "src",
+    .name = .ZigBoy,
+    .version = "1.1.0",
+    .dependencies = .{
+        .raylib = .{
+            .url = "git+https://github.com/raysan5/raylib.git#8e82249f6572ae2683a9cade6addd9b404abd710",
+            .hash = "raylib-6.0.0-whq8uAjHLgVNXHLHOqJHSmPSklIZ6cEITahChbbKLnjQ",
+        },
     },
+    .paths = .{""},
+    .fingerprint = 0x96a6b7ea422e6f06,
 }

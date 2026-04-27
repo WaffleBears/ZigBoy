@@ -26,6 +26,7 @@ pub const Cart = struct {
     rtc_latched: [5]u8 = .{0} ** 5,
     rtc_select: u8 = 0,
     rtc_latch_prev: u8 = 0xFF,
+    rtc_cycle_accum: u32 = 0,
 
     allocator: std.mem.Allocator,
 
@@ -97,6 +98,53 @@ pub const Cart = struct {
         return (self.cgb_flag & 0x80) != 0;
     }
 
+    pub fn reset(self: *Cart) void {
+        self.rom_bank = 1;
+        self.ram_bank = 0;
+        self.ram_enabled = false;
+        self.banking_mode = 0;
+        self.rtc_select = 0;
+        self.rtc_latch_prev = 0xFF;
+    }
+
+    pub fn tickRtc(self: *Cart, cycles: u32) void {
+        if (!self.has_rtc) return;
+        if ((self.rtc_regs[4] & 0x40) != 0) return;
+        self.rtc_cycle_accum += cycles;
+        const cycles_per_sec: u32 = 4194304;
+        while (self.rtc_cycle_accum >= cycles_per_sec) {
+            self.rtc_cycle_accum -= cycles_per_sec;
+            self.rtcAdvanceSecond();
+        }
+    }
+
+    fn rtcAdvanceSecond(self: *Cart) void {
+        var s: u8 = self.rtc_regs[0] +% 1;
+        if (s >= 60) {
+            s = 0;
+            var m: u8 = self.rtc_regs[1] +% 1;
+            if (m >= 60) {
+                m = 0;
+                var h: u8 = self.rtc_regs[2] +% 1;
+                if (h >= 24) {
+                    h = 0;
+                    const day_lo: u16 = self.rtc_regs[3];
+                    const day_hi: u8 = self.rtc_regs[4];
+                    var d: u16 = day_lo | (@as(u16, day_hi & 1) << 8);
+                    d +%= 1;
+                    self.rtc_regs[3] = @truncate(d & 0xFF);
+                    var hi = day_hi & 0xFE;
+                    if ((d & 0x100) != 0) hi |= 0x01;
+                    if (d >= 0x200) hi |= 0x80;
+                    self.rtc_regs[4] = hi;
+                }
+                self.rtc_regs[2] = h;
+            }
+            self.rtc_regs[1] = m;
+        }
+        self.rtc_regs[0] = s;
+    }
+
     pub fn read(self: *Cart, addr: u16) u8 {
         return switch (self.kind) {
             .rom_only => self.readRomOnly(addr),
@@ -137,8 +185,10 @@ pub const Cart = struct {
     }
 
     fn readMbc1(self: *Cart, addr: u16) u8 {
+        const bank_count: u32 = @max(@as(u32, @intCast(self.rom.len / 0x4000)), 1);
+        const bank_mask: u32 = bank_count - 1;
         if (addr < 0x4000) {
-            const bank: u32 = if (self.banking_mode == 1) (@as(u32, self.ram_bank) << 5) else 0;
+            const bank: u32 = if (self.banking_mode == 1) ((@as(u32, self.ram_bank) << 5) & bank_mask) else 0;
             const off = bank * 0x4000 + addr;
             if (off < self.rom.len) return self.rom[off];
             return 0xFF;
@@ -146,6 +196,7 @@ pub const Cart = struct {
             var bank: u32 = self.rom_bank & 0x1F;
             if (bank == 0) bank = 1;
             bank |= (@as(u32, self.ram_bank) & 0x03) << 5;
+            bank &= bank_mask;
             const off = bank * 0x4000 + (addr - 0x4000);
             if (off < self.rom.len) return self.rom[off];
             return 0xFF;
@@ -213,12 +264,15 @@ pub const Cart = struct {
     }
 
     fn readMbc3(self: *Cart, addr: u16) u8 {
+        const bank_count: u32 = @max(@as(u32, @intCast(self.rom.len / 0x4000)), 1);
+        const bank_mask: u32 = bank_count - 1;
         if (addr < 0x4000) {
             if (addr < self.rom.len) return self.rom[addr];
             return 0xFF;
         } else if (addr < 0x8000) {
             var bank: u32 = self.rom_bank;
             if (bank == 0) bank = 1;
+            bank &= bank_mask;
             const off = bank * 0x4000 + (addr - 0x4000);
             if (off < self.rom.len) return self.rom[off];
             return 0xFF;
@@ -227,7 +281,7 @@ pub const Cart = struct {
             if (self.rtc_select >= 0x08 and self.rtc_select <= 0x0C) {
                 return self.rtc_latched[self.rtc_select - 0x08];
             }
-            const bank: u32 = self.ram_bank;
+            const bank: u32 = self.ram_bank & 0x03;
             const off = bank * 0x2000 + (addr - 0xA000);
             if (off < self.ram.len) return self.ram[off];
             return 0xFF;
@@ -258,18 +312,20 @@ pub const Cart = struct {
                 self.rtc_regs[self.rtc_select - 0x08] = val;
                 return;
             }
-            const bank: u32 = self.ram_bank;
+            const bank: u32 = self.ram_bank & 0x03;
             const off = bank * 0x2000 + (addr - 0xA000);
             if (off < self.ram.len) self.ram[off] = val;
         }
     }
 
     fn readMbc5(self: *Cart, addr: u16) u8 {
+        const bank_count: u32 = @max(@as(u32, @intCast(self.rom.len / 0x4000)), 1);
+        const bank_mask: u32 = bank_count - 1;
         if (addr < 0x4000) {
             if (addr < self.rom.len) return self.rom[addr];
             return 0xFF;
         } else if (addr < 0x8000) {
-            const bank: u32 = self.rom_bank;
+            const bank: u32 = @as(u32, self.rom_bank) & bank_mask;
             const off = bank * 0x4000 + (addr - 0x4000);
             if (off < self.rom.len) return self.rom[off];
             return 0xFF;

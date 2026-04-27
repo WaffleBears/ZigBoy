@@ -20,10 +20,14 @@ pub const Joypad = struct {
     }
 
     pub fn press(self: *Joypad, b: Button) void {
-        const mask: u8 = @as(u8, 1) << @intCast(@intFromEnum(b));
+        const idx = @intFromEnum(b);
+        const mask: u8 = @as(u8, 1) << @intCast(idx);
         const was_high = (self.buttons & mask) != 0;
         self.buttons &= ~mask;
-        if (was_high) self.irq_request = true;
+        const is_dir = idx < 4;
+        const is_btn = idx >= 4;
+        const visible = (is_dir and self.select_dir) or (is_btn and self.select_btn);
+        if (was_high and visible) self.irq_request = true;
     }
 
     pub fn release(self: *Joypad, b: Button) void {
@@ -42,7 +46,10 @@ pub const Joypad = struct {
     }
 
     pub fn write(self: *Joypad, val: u8) void {
+        const old = self.read() & 0x0F;
         self.select_btn = (val & 0x20) == 0;
         self.select_dir = (val & 0x10) == 0;
+        const new = self.read() & 0x0F;
+        if ((old & ~new) != 0) self.irq_request = true;
     }
 };
